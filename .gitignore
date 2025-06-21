@@ -1,0 +1,6 @@
+# Standard
+*.env
+
+# Specific
+db_keys.env
+bucket_keys.env
