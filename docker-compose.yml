@@ -1,0 +1,58 @@
+version: '3.9'
+
+services:
+  db:
+    image: postgres:15-alpine
+    container_name: emr_db
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    # Port is optional here, web service connects via network, not host port
+    # - "5432:5432" # Keep for local debugging, but not strictly needed for web-to-db comms
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  web:
+    build: .
+    container_name: emr_api
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1
+    # - .:/app # This mounts local code. We want compiled code inside image for Lightsail.
+    # This service will not expose ports directly to the host anymore, Nginx will handle it.
+    # ports: # REMOVE OR COMMENT OUT THIS BLOCK FOR PRODUCTION DEPLOYMENT
+    #   - "8000:8000"
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_HOST: db
+      POSTGRES_PORT: 5432
+      STORAGE_BUCKET_URL: ${STORAGE_BUCKET_URL}
+      STORAGE_USERNAME: ${STORAGE_USERNAME}
+      STORAGE_PASSWORD: ${STORAGE_PASSWORD}
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  nginx:
+    image: nginx:stable-alpine # Use a lightweight Nginx image
+    container_name: emr_nginx
+    ports:
+      - "80:80"  # Nginx listens on host port 80 and maps to container port 80
+      # - "443:443" # For HTTPS later, if you set up SSL
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro # Mount our custom nginx.conf
+    depends_on:
+      web:
+        condition: service_started # Nginx needs the web service to be started, but not necessarily "healthy" right away
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
