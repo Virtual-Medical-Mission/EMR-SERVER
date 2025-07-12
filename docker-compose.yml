@@ -23,7 +23,6 @@ services:
     build: .
     container_name: emr_api
     command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1
-    # REMOVE OR COMMENT OUT THIS LINE FOR PRODUCTION DEPLOYMENT:
     # - .:/app # This mounts local code. We want compiled code inside image for Lightsail.
     # This service will not expose ports directly to the host anymore, Nginx will handle it.
     # ports: # REMOVE OR COMMENT OUT THIS BLOCK FOR PRODUCTION DEPLOYMENT
