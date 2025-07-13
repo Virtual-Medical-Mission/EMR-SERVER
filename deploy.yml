@@ -1,0 +1,80 @@
+name: Deploy EMR API to Lightsail
+
+on:
+  push:
+    branches:
+      - main # Trigger on pushes to the 'main' branch
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest # Use a fresh Ubuntu runner provided by GitHub Actions
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4 # Action to clone your repository code into the runner
+
+      - name: Set up SSH key for Lightsail
+        uses: webfactory/ssh-agent@v0.9.0 # Action to securely load your SSH private key
+        with:
+          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }} # Uses the secret we just configured
+
+      - name: Deploy to Lightsail via SSH
+        env:
+          # These environment variables will be passed securely to the SSH session
+          # and then used to create/update the .env file on the Lightsail server.
+          POSTGRES_DB: ${{ secrets.POSTGRES_DB }}
+          POSTGRES_USER: ${{ secrets.POSTGRES_USER }}
+          POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+          POSTGRES_HOST: ${{ secrets.POSTGRES_HOST }}
+          POSTGRES_PORT: ${{ secrets.POSTGRES_PORT }}
+          STORAGE_BUCKET_URL: ${{ secrets.STORAGE_BUCKET_URL }}
+          STORAGE_USERNAME: ${{ secrets.STORAGE_USERNAME }}
+          STORAGE_PASSWORD: ${{ secrets.STORAGE_PASSWORD }}
+        run: |
+          LIGHTSAIL_IP=${{ secrets.LIGHTSAIL_IP }}
+          REMOTE_DIR="/home/ubuntu/EMR-SERVER" # Path to your cloned repo on Lightsail
+
+          # Use SSH to connect to Lightsail and run commands there
+          # -o StrictHostKeyChecking=no bypasses the host key prompt (safe in CI/CD with known IPs)
+          ssh -o StrictHostKeyChecking=no ubuntu@$LIGHTSAIL_IP << 'EOF'
+            # 1. Install Docker and Docker Compose (if not already present)
+            #    'apt-get update' updates package lists, 'apt-get install' installs software.
+            #    '-y' answers yes to prompts. 'docker.io' is the Ubuntu package for Docker.
+            sudo apt-get update && sudo apt-get install -y docker.io docker-compose
+
+            # 2. Add the 'ubuntu' user to the 'docker' group
+            #    This allows the 'ubuntu' user to run docker commands without 'sudo'.
+            #    The change might require a new login session to take effect fully,
+            #    but often works within a script.
+            sudo usermod -aG docker ubuntu
+
+            # 3. Navigate to your project directory on the Lightsail server
+            cd ${REMOTE_DIR} || exit 1 # '|| exit 1' ensures script stops if directory not found
+
+            # 4. Pull the latest code from your GitHub repository
+            #    This ensures your server has the most up-to-date Dockerfiles, compose files, and app code.
+            git pull origin main
+
+            # 5. Stop and remove any currently running containers for your project
+            #    This ensures a clean restart.
+            docker compose down || true # '|| true' prevents script from failing if containers aren't running
+
+            # 6. Recreate/Update the .env file on the Lightsail server
+            #    This populates your application's environment variables from GitHub Secrets.
+            echo "POSTGRES_DB=$POSTGRES_DB" > .env
+            echo "POSTGRES_USER=$POSTGRES_USER" >> .env
+            echo "POSTGRES_PASSWORD=$POSTGRES_PASSWORD" >> .env
+            echo "POSTGRES_HOST=$POSTGRES_HOST" >> .env
+            echo "POSTGRES_PORT=$POSTGRES_PORT" >> .env
+            echo "STORAGE_BUCKET_URL=$STORAGE_BUCKET_URL" >> .env
+            echo "STORAGE_USERNAME=$STORAGE_USERNAME" >> .env
+            echo "STORAGE_PASSWORD=$STORAGE_PASSWORD" >> .env
+
+            # 7. Build and start your Docker containers (FastAPI app and Nginx)
+            #    '--build' forces Docker to rebuild images (picks up latest code/Dockerfile changes).
+            #    '-d' runs containers in detached mode (in the background).
+            docker compose up --build -d
+
+            # 8. Clean up old, unused Docker images to save disk space
+            docker image prune -f
+          EOF
