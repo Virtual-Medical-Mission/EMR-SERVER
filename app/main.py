@@ -3,7 +3,7 @@ from sqlalchemy import text, inspect
 from sqlalchemy.exc import OperationalError
 
 # Import database engine and DB_NAME for connection management and display
-from database import engine, DB_NAME
+from .database import engine, DB_NAME
 
 app = FastAPI()
 
