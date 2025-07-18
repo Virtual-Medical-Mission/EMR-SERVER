@@ -19,62 +19,66 @@ jobs:
           ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }} # Uses the secret we just configured
 
       - name: Deploy to Lightsail via SSH
-        env:
-          # These environment variables will be passed securely to the SSH session
-          # and then used to create/update the .env file on the Lightsail server.
-          POSTGRES_DB: ${{ secrets.POSTGRES_DB }}
-          POSTGRES_USER: ${{ secrets.POSTGRES_USER }}
-          POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
-          POSTGRES_HOST: ${{ secrets.POSTGRES_HOST }}
-          POSTGRES_PORT: ${{ secrets.POSTGRES_PORT }}
-          STORAGE_BUCKET_URL: ${{ secrets.STORAGE_BUCKET_URL }}
-          STORAGE_USERNAME: ${{ secrets.STORAGE_USERNAME }}
-          STORAGE_PASSWORD: ${{ secrets.STORAGE_PASSWORD }}
-        run: |
-          LIGHTSAIL_IP=${{ secrets.LIGHTSAIL_IP }}
-          REMOTE_DIR="/home/ubuntu/EMR-SERVER" # Path to your cloned repo on Lightsail
+        env:
+          POSTGRES_DB: ${{ secrets.POSTGRES_DB }}
+          POSTGRES_USER: ${{ secrets.POSTGRES_USER }}
+          POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
+          POSTGRES_HOST: ${{ secrets.POSTGRES_HOST }}
+          POSTGRES_PORT: ${{ secrets.POSTGRES_PORT }}
+          STORAGE_BUCKET_URL: ${{ secrets.STORAGE_BUCKET_URL }}
+          STORAGE_USERNAME: ${{ secrets.STORAGE_USERNAME }}
+          STORAGE_PASSWORD: ${{ secrets.STORAGE_PASSWORD }}
+        run: |
+          LIGHTSAIL_IP=${{ secrets.LIGHTSAIL_IP }}
+          REMOTE_DIR="/home/ubuntu/EMR-SERVER"
+          # Using SSH URL for cloning/pulling for consistency with SSH key setup
+          REPO_SSH_URL="git@github.com:Virtual-Medical-Mission/EMR-SERVER.git" 
 
-          # Use SSH to connect to Lightsail and run commands there
-          # -o StrictHostKeyChecking=no bypasses the host key prompt (safe in CI/CD with known IPs)
-          ssh -o StrictHostKeyChecking=no ubuntu@$LIGHTSAIL_IP << 'EOF'
-            # 1. Install Docker and Docker Compose (if not already present)
-            #    'apt-get update' updates package lists, 'apt-get install' installs software.
-            #    '-y' answers yes to prompts. 'docker.io' is the Ubuntu package for Docker.
-            sudo apt-get update && sudo apt-get install -y docker.io docker-compose
+          # Use SSH to connect to Lightsail and run commands there
+          ssh -o StrictHostKeyChecking=no ubuntu@$LIGHTSAIL_IP << 'EOF'
+            # 1. Install Docker, Docker Compose, and Git (if not already present)
+            sudo apt-get update && sudo apt-get install -y docker.io docker-compose git
 
-            # 2. Add the 'ubuntu' user to the 'docker' group
-            #    This allows the 'ubuntu' user to run docker commands without 'sudo'.
-            #    The change might require a new login session to take effect fully,
-            #    but often works within a script.
-            sudo usermod -aG docker ubuntu
+            # 2. Add the 'ubuntu' user to the 'docker' group
+            sudo usermod -aG docker ubuntu
 
-            # 3. Navigate to your project directory on the Lightsail server
-            cd ${REMOTE_DIR} || exit 1 # '|| exit 1' ensures script stops if directory not found
+            # 3. Ensure the project directory exists and is up-to-date
+            # This section ensures your server always has the latest, clean code.
+            mkdir -p $(dirname "${REMOTE_DIR}") # Ensure parent dir exists for cloning
 
-            # 4. Pull the latest code from your GitHub repository
-            #    This ensures your server has the most up-to-date Dockerfiles, compose files, and app code.
-            git pull origin main
+            if [ -d "${REMOTE_DIR}/.git" ]; then
+              echo "Repository already cloned. Pulling latest changes."
+              cd "${REMOTE_DIR}" || exit 1
+              # Forcefully discard any local changes and reset to remote main
+              git reset --hard origin/main
+              git clean -df # Remove untracked files and directories
+              git pull origin main
+            else
+              echo "Repository not found. Cloning it now."
+              git clone "${REPO_SSH_URL}" "${REMOTE_DIR}"
+              cd "${REMOTE_DIR}" || exit 1
+            fi
 
-            # 5. Stop and remove any currently running containers for your project
-            #    This ensures a clean restart.
-            docker compose down || true # '|| true' prevents script from failing if containers aren't running
+            # 4. Stop and remove any currently running containers for your project
+            docker compose down -v --remove-orphans || true 
 
-            # 6. Recreate/Update the .env file on the Lightsail server
-            #    This populates your application's environment variables from GitHub Secrets.
-            echo "POSTGRES_DB=$POSTGRES_DB" > .env
-            echo "POSTGRES_USER=$POSTGRES_USER" >> .env
-            echo "POSTGRES_PASSWORD=$POSTGRES_PASSWORD" >> .env
-            echo "POSTGRES_HOST=$POSTGRES_HOST" >> .env
-            echo "POSTGRES_PORT=$POSTGRES_PORT" >> .env
-            echo "STORAGE_BUCKET_URL=$STORAGE_BUCKET_URL" >> .env
-            echo "STORAGE_USERNAME=$STORAGE_USERNAME" >> .env
-            echo "STORAGE_PASSWORD=$STORAGE_PASSWORD" >> .env
+            # 5. Recreate/Update the .env file on the Lightsail server
+            # This uses a here-document to write the entire file at once
+            cat << ENV_VARS > .env
+            POSTGRES_DB=$POSTGRES_DB
+            POSTGRES_USER=$POSTGRES_USER
+            POSTGRES_PASSWORD=$POSTGRES_PASSWORD
+            POSTGRES_HOST=$POSTGRES_HOST
+            POSTGRES_PORT=$POSTGRES_PORT
+            STORAGE_BUCKET_URL=$STORAGE_BUCKET_URL
+            STORAGE_USERNAME=$STORAGE_USERNAME
+            STORAGE_PASSWORD=$STORAGE_PASSWORD
+            ENV_VARS
 
-            # 7. Build and start your Docker containers (FastAPI app and Nginx)
-            #    '--build' forces Docker to rebuild images (picks up latest code/Dockerfile changes).
-            #    '-d' runs containers in detached mode (in the background).
-            docker compose up --build -d
+            # 6. Build and start your Docker containers
+            docker compose up --build -d --force-recreate
 
-            # 8. Clean up old, unused Docker images to save disk space
-            docker image prune -f
-          EOF
+            # 7. Clean up old, unused Docker images and stopped containers
+            docker image prune -f
+            docker container prune -f
+          EOF
