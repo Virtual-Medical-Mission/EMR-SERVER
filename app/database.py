@@ -4,14 +4,14 @@ from dotenv import load_dotenv
 
 # --- Load environment variables from db_keys.env file ---
 # Explicitly tell load_dotenv to look for 'db_keys.env'
-load_dotenv(dotenv_path='db_keys.env') # <-- THIS IS THE CRITICAL CHANGE
+load_dotenv(dotenv_path='.env') # <-- THIS IS THE CRITICAL CHANGE
 
 # --- Database Configuration ---
-DB_USER = os.getenv("DB_USER")
-DB_PASSWORD = os.getenv("DB_PASSWORD")
-DB_HOST = os.getenv("DB_HOST")
-DB_PORT = os.getenv("DB_PORT")
-DB_NAME = os.getenv("DB_NAME")
+DB_USER = os.getenv("POSTGRES_USER")
+DB_PASSWORD = os.getenv("POSTGRES_PASSWORD")
+DB_HOST = os.getenv("POSTGRES_HOST")
+DB_PORT = os.getenv("POSTGRES_PORT")
+DB_NAME = os.getenv("POSTGRES_DB=")
 
 # Ensure all required environment variables are set
 if not all([DB_USER, DB_PASSWORD, DB_HOST, DB_PORT, DB_NAME]):
