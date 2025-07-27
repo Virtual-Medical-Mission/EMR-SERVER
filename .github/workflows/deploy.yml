@@ -37,104 +37,115 @@ jobs:
           STORAGE_USERNAME: ${{ secrets.STORAGE_USERNAME }}
           STORAGE_PASSWORD: ${{ secrets.STORAGE_PASSWORD }}
         run: |
-          # Construct the .env file content on the GitHub Actions runner.
-          # We use printf and ensure all variables are quoted to handle special characters.
-          # This content will be passed as a single string to the remote.
-          ENV_FILE_CONTENT=$(printf "POSTGRES_DB=%s\nPOSTGRES_USER=%s\nPOSTGRES_PASSWORD=%s\nPOSTGRES_HOST=%s\nPOSTGRES_PORT=%s\nSTORAGE_BUCKET_URL=%s\nSTORAGE_USERNAME=%s\nSTORAGE_PASSWORD=%s\n" \
-            "${{ env.POSTGRES_DB }}" \
-            "${{ env.POSTGRES_USER }}" \
-            "${{ env.POSTGRES_PASSWORD }}" \
-            "${{ env.POSTGRES_HOST }}" \
-            "${{ env.POSTGRES_PORT }}" \
-            "${{ env.STORAGE_BUCKET_URL }}" \
-            "${{ env.STORAGE_USERNAME }}" \
-            "${{ env.STORAGE_PASSWORD }}" \
-          )
-
-          # Define PROJECT_DIR and REPO_URL here for clarity and to ensure they are interpreted
-          # by the local shell before being passed to the remote.
-          PROJECT_DIR_LOCAL="/home/ubuntu/EMR-SERVER"
-          REPO_URL_LOCAL="git@github.com:Virtual-Medical-Mission/EMR-SERVER.git" # Your repository URL
-
-          # SSH into the Lightsail instance and execute commands.
-          # IMPORTANT: Removed single quotes around EOF_SSH to allow local shell variable expansion.
-          # This means variables like $PROJECT_DIR_LOCAL, $REPO_URL_LOCAL, and $ENV_FILE_CONTENT
-          # will be expanded by the GitHub Actions runner's shell before being sent to Lightsail.
-          ssh -A ubuntu@${{ env.LIGHTSAIL_IP }} << EOF_SSH
-            # These variables are now expanded by the GitHub Actions runner's shell
-            # and passed as literal strings into the remote shell.
-            PROJECT_DIR="$PROJECT_DIR_LOCAL"
-            REPO_URL="$REPO_URL_LOCAL"
-            ENV_CONTENT_TO_WRITE="$ENV_FILE_CONTENT" # Pass the constructed .env content
-
-            echo "--- Starting deployment on Lightsail ---"
-
-            # --- Install/Update Dependencies (Idempotent and Clean) ---
-            echo "Checking for and installing/updating apt packages (cleaning up old docker first)..."
-            sudo apt-get update -y
-            # Purge existing docker installations to prevent containerd conflicts
-            sudo apt-get remove -y docker docker-engine docker.io containerd runc || true
-            sudo apt-get autoremove -y --purge || true
-            # Install new docker and git
-            sudo apt-get install -y docker.io docker-compose git
-            echo "Adding ubuntu user to docker group..."
-            sudo usermod -aG docker ubuntu || true # Add user to docker group, ignore error if already exists
-
-            # Ensure docker daemon is running and user has permissions
-            echo "Restarting docker service and applying group permissions..."
-            sudo systemctl restart docker
-            newgrp docker # Apply new group permissions for current session (though not strictly necessary for script)
-
-            # --- Git Synchronization ---
-            echo "Performing Git synchronization..."
-            echo "Repository URL being used: $REPO_URL" # Debugging: show the URL
-            if [ -d "$PROJECT_DIR/.git" ]; then
-              echo "Repository already exists. Fetching and resetting..."
-              cd "$PROJECT_DIR"
-              git fetch origin main --verbose # Fetch latest changes verbosely
-              git reset --hard origin/main    # Forcefully reset to match remote main
-              git clean -df                   # Remove untracked files and directories
-              git pull origin main --verbose  # Pull latest (redundant after reset --hard, but good for logs)
-              echo "Current commit on server:"
-              git log -1 --pretty=format:"%h - %an, %ar : %s"
-            else
-              echo "Repository does not exist. Cloning..."
-              # Use SSH agent forwarding for cloning via SSH
-              git clone "$REPO_URL" "$PROJECT_DIR"
-              cd "$PROJECT_DIR"
-              echo "Cloned repository. Current commit:"
-              git log -1 --pretty=format:"%h - %an, %ar : %s"
-            fi
-            echo "Git synchronization complete."
-
-            # --- Create/Update .env file ---
-            echo "Creating/Updating .env file with secrets..."
-            # Now, simply echo the pre-constructed and expanded content into the file
-            echo "$ENV_CONTENT_TO_WRITE" > "$PROJECT_DIR/.env"
-            echo ".env file created/updated."
-            echo "Contents of .env (excluding sensitive values):"
-            grep -v "PASSWORD" "$PROJECT_DIR/.env" # Show .env content, but hide passwords
-
-            # --- Docker Compose Deployment ---
-            echo "Navigating to project directory for Docker Compose..."
+          # Define constants
+          PROJECT_DIR="/home/ubuntu/EMR-SERVER"
+          REPO_URL="https://github.com/Virtual-Medical-Mission/EMR-SERVER.git"
+          
+          # Create a temporary script to upload
+          cat > deploy_script.sh << 'SCRIPT_EOF'
+          #!/bin/bash
+          set -e  # Exit on any error
+          
+          PROJECT_DIR="/home/ubuntu/EMR-SERVER"
+          REPO_URL="https://github.com/Virtual-Medical-Mission/EMR-SERVER.git"
+          
+          echo "--- Starting deployment on Lightsail ---"
+          
+          # --- Install/Update Dependencies (Idempotent and Clean) ---
+          echo "Checking for and installing/updating apt packages..."
+          sudo apt-get update -y
+          
+          # Remove old Docker installations to prevent conflicts
+          sudo apt-get remove -y docker docker-engine docker.io containerd runc 2>/dev/null || true
+          sudo apt-get autoremove -y --purge 2>/dev/null || true
+          
+          # Install Docker and dependencies
+          sudo apt-get install -y docker.io docker-compose-plugin git curl
+          
+          # Add ubuntu user to docker group
+          sudo usermod -aG docker ubuntu 2>/dev/null || true
+          
+          # Start and enable Docker service
+          sudo systemctl enable docker
+          sudo systemctl start docker
+          
+          # Wait for Docker to be ready
+          echo "Waiting for Docker to be ready..."
+          sleep 5
+          
+          # --- Git Synchronization ---
+          echo "Performing Git synchronization..."
+          if [ -d "$PROJECT_DIR/.git" ]; then
+            echo "Repository already exists. Updating..."
             cd "$PROJECT_DIR"
-
-            echo "Stopping and removing old Docker containers and volumes..."
-            # Use '|| true' to prevent script from failing if containers don't exist
-            docker compose down -v --remove-orphans || true
-
-            echo "Pruning old Docker images and containers..."
-            docker image prune -f || true
-            docker container prune -f || true
-
-            echo "Building and starting new Docker containers..."
-            # --build: Forces image rebuild using latest code
-            # -d: Runs in detached mode
-            # --force-recreate: Recreates containers even if config hasn't changed
-            docker compose up --build -d --force-recreate
-
-            echo "Checking Docker Compose service status:"
-            docker compose ps
-
-            echo "--- Deployment complete ---"
-          EOF_SSH # Closing delimiter for the SSH heredoc
+            git fetch origin main
+            git reset --hard origin/main
+            git clean -df
+            echo "Current commit on server:"
+            git log -1 --oneline
+          else
+            echo "Repository does not exist. Cloning..."
+            rm -rf "$PROJECT_DIR" 2>/dev/null || true
+            git clone "$REPO_URL" "$PROJECT_DIR"
+            cd "$PROJECT_DIR"
+            echo "Cloned repository. Current commit:"
+            git log -1 --oneline
+          fi
+          
+          echo "Git synchronization complete."
+          
+          # --- Docker Compose Deployment ---
+          echo "Navigating to project directory..."
+          cd "$PROJECT_DIR"
+          
+          echo "Stopping existing containers..."
+          docker compose down -v --remove-orphans 2>/dev/null || true
+          
+          echo "Cleaning up Docker resources..."
+          docker system prune -f 2>/dev/null || true
+          
+          echo "Building and starting containers..."
+          docker compose up --build -d --force-recreate
+          
+          echo "Checking service status:"
+          docker compose ps
+          
+          echo "--- Deployment complete ---"
+          SCRIPT_EOF
+          
+          # Make the script executable
+          chmod +x deploy_script.sh
+          
+          # Create .env content
+          ENV_CONTENT="POSTGRES_DB=$POSTGRES_DB
+          POSTGRES_USER=$POSTGRES_USER
+          POSTGRES_PASSWORD=$POSTGRES_PASSWORD
+          POSTGRES_HOST=$POSTGRES_HOST
+          POSTGRES_PORT=$POSTGRES_PORT
+          STORAGE_BUCKET_URL=$STORAGE_BUCKET_URL
+          STORAGE_USERNAME=$STORAGE_USERNAME
+          STORAGE_PASSWORD=$STORAGE_PASSWORD"
+          
+          # Upload and execute deployment
+          scp deploy_script.sh ubuntu@$LIGHTSAIL_IP:/tmp/
+          
+          ssh ubuntu@$LIGHTSAIL_IP << 'SSH_EOF'
+            # Create .env file
+            mkdir -p /home/ubuntu/EMR-SERVER
+            cat > /home/ubuntu/EMR-SERVER/.env << 'ENV_EOF'
+          SSH_EOF
+          
+          # Send the env content
+          ssh ubuntu@$LIGHTSAIL_IP "cat >> /home/ubuntu/EMR-SERVER/.env" << ENV_EOF
+          $ENV_CONTENT
+          ENV_EOF
+          
+          # Execute the deployment script
+          ssh ubuntu@$LIGHTSAIL_IP << 'SSH_EOF'
+            chmod +x /tmp/deploy_script.sh
+            /tmp/deploy_script.sh
+            rm /tmp/deploy_script.sh
+          SSH_EOF
+          
+          # Clean up local script
+          rm deploy_script.sh
