@@ -33,18 +33,40 @@ jobs:
           POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
           POSTGRES_HOST: ${{ secrets.POSTGRES_HOST }}
           POSTGRES_PORT: ${{ secrets.POSTGRES_PORT }}
+          STORAGE_BUCKET_URL: ${{ secrets.STORAGE_BUCKET_URL }} # Assuming this is also a secret
+          STORAGE_USERNAME: ${{ secrets.STORAGE_USERNAME }}
+          STORAGE_PASSWORD: ${{ secrets.STORAGE_PASSWORD }}
         run: |
+          # Construct the .env content locally on the GitHub Actions runner
+          # Use printf for robust handling of special characters and newlines
+          # This ensures the content is correctly formed before being sent to the remote server.
+          ENV_CONTENT=$(printf "POSTGRES_DB=%s\nPOSTGRES_USER=%s\nPOSTGRES_PASSWORD=%s\nPOSTGRES_HOST=%s\nPOSTGRES_PORT=%s\nSTORAGE_BUCKET_URL=%s\nSTORAGE_USERNAME=%s\nSTORAGE_PASSWORD=%s\n" \
+            "${{ env.POSTGRES_DB }}" \
+            "${{ env.POSTGRES_USER }}" \
+            "${{ env.POSTGRES_PASSWORD }}" \
+            "${{ env.POSTGRES_HOST }}" \
+            "${{ env.POSTGRES_PORT }}" \
+            "${{ env.STORAGE_BUCKET_URL }}" \
+            "${{ env.STORAGE_USERNAME }}" \
+            "${{ env.STORAGE_PASSWORD }}" \
+          )
+
           # SSH into the Lightsail instance and execute commands
-          ssh ubuntu@${{ env.LIGHTSAIL_IP }} << 'EOF'
+          # Use -A for agent forwarding to allow Git operations via SSH
+          ssh -A ubuntu@${{ env.LIGHTSAIL_IP }} << 'EOF'
             # Define project directory
             PROJECT_DIR="/home/ubuntu/EMR-SERVER"
             REPO_URL="git@github.com:Virtual-Medical-Mission/EMR-SERVER.git" # Your repository URL
 
             echo "--- Starting deployment on Lightsail ---"
 
-            # --- Install/Update Dependencies (Idempotent) ---
-            echo "Checking for and installing/updating apt packages..."
+            # --- Install/Update Dependencies (Idempotent and Clean) ---
+            echo "Checking for and installing/updating apt packages (cleaning up old docker first)..."
             sudo apt-get update -y
+            # Purge existing docker installations to prevent containerd conflicts
+            sudo apt-get remove -y docker docker-engine docker.io containerd runc || true
+            sudo apt-get autoremove -y --purge || true
+            # Install new docker and git
             sudo apt-get install -y docker.io docker-compose git
             echo "Adding ubuntu user to docker group..."
             sudo usermod -aG docker ubuntu || true # Add user to docker group, ignore error if already exists
@@ -67,6 +89,7 @@ jobs:
               git log -1 --pretty=format:"%h - %an, %ar : %s"
             else
               echo "Repository does not exist. Cloning..."
+              # Use SSH agent forwarding for cloning via SSH
               git clone "$REPO_URL" "$PROJECT_DIR"
               cd "$PROJECT_DIR"
               echo "Cloned repository. Current commit:"
@@ -76,22 +99,9 @@ jobs:
 
             # --- Create/Update .env file ---
             echo "Creating/Updating .env file with secrets..."
-            # Ensure the .env file is created in the correct location
-            # and contains all necessary variables with correct names.
-            # We are using the .env file as the source for the app, as per your latest database.py
-            cat << EOT > "$PROJECT_DIR/.env"
-            # Postgres Database Keys
-            POSTGRES_DB=${{ env.POSTGRES_DB }}
-            POSTGRES_USER=${{ env.POSTGRES_USER }}
-            POSTGRES_PASSWORD=${{ env.POSTGRES_PASSWORD }}
-            POSTGRES_HOST=${{ env.POSTGRES_HOST }}
-            POSTGRES_PORT=${{ env.POSTGRES_PORT }}
-
-            # Lightsail Bucket Keys
-            STORAGE_BUCKET_URL=${{ env.STORAGE_BUCKET_URL }}
-            STORAGE_USERNAME=${{ env.STORAGE_USERNAME }}
-            STORAGE_PASSWORD=${{ env.STORAGE_PASSWORD }}
-            EOT
+            # The ENV_CONTENT variable is passed from the GitHub Actions runner's environment
+            # This ensures special characters are handled correctly as it's already expanded.
+            echo "$ENV_CONTENT" > "$PROJECT_DIR/.env"
             echo ".env file created/updated."
             echo "Contents of .env (excluding sensitive values):"
             grep -v "PASSWORD" "$PROJECT_DIR/.env" # Show .env content, but hide passwords
