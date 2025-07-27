@@ -1,80 +1,121 @@
-name: Deploy EMR API to Lightsail
+name: Deploy EMR-SERVER to Lightsail
 
 on:
   push:
     branches:
-      - main # Trigger on pushes to the 'main' branch
+      - main # Trigger on push to the main branch
 
 jobs:
   deploy:
-    runs-on: ubuntu-latest # Use a fresh Ubuntu runner provided by GitHub Actions
+    runs-on: ubuntu-latest # Use a GitHub-hosted runner
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4 # Action to clone your repository code into the runner
+      - name: Checkout repository
+        uses: actions/checkout@v4 # Checkout your code
 
-      - name: Set up SSH key for Lightsail
-        uses: webfactory/ssh-agent@v0.9.0 # Action to securely load your SSH private key
+      - name: Set up SSH Agent
+        uses: webfactory/ssh-agent@v0.9.0
         with:
-          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }} # Uses the secret we just configured
+          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }} # Use your SSH private key secret
+
+      - name: Add Lightsail IP to known_hosts
+        run: |
+          mkdir -p ~/.ssh
+          ssh-keyscan -H ${{ secrets.LIGHTSAIL_IP }} >> ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
 
       - name: Deploy to Lightsail via SSH
         env:
-          # These environment variables will be passed securely to the SSH session
-          # and then used to create/update the .env file on the Lightsail server.
+          # Pass all necessary secrets as environment variables to this step
+          LIGHTSAIL_IP: ${{ secrets.LIGHTSAIL_IP }}
           POSTGRES_DB: ${{ secrets.POSTGRES_DB }}
           POSTGRES_USER: ${{ secrets.POSTGRES_USER }}
           POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
           POSTGRES_HOST: ${{ secrets.POSTGRES_HOST }}
           POSTGRES_PORT: ${{ secrets.POSTGRES_PORT }}
-          STORAGE_BUCKET_URL: ${{ secrets.STORAGE_BUCKET_URL }}
-          STORAGE_USERNAME: ${{ secrets.STORAGE_USERNAME }}
-          STORAGE_PASSWORD: ${{ secrets.STORAGE_PASSWORD }}
         run: |
-          LIGHTSAIL_IP=${{ secrets.LIGHTSAIL_IP }}
-          REMOTE_DIR="/home/ubuntu/EMR-SERVER" # Path to your cloned repo on Lightsail
+          # SSH into the Lightsail instance and execute commands
+          ssh ubuntu@${{ env.LIGHTSAIL_IP }} << 'EOF'
+            # Define project directory
+            PROJECT_DIR="/home/ubuntu/EMR-SERVER"
+            REPO_URL="git@github.com:Virtual-Medical-Mission/EMR-SERVER.git" # Your repository URL
 
-          # Use SSH to connect to Lightsail and run commands there
-          # -o StrictHostKeyChecking=no bypasses the host key prompt (safe in CI/CD with known IPs)
-          ssh -o StrictHostKeyChecking=no ubuntu@$LIGHTSAIL_IP << 'EOF'
-            # 1. Install Docker and Docker Compose (if not already present)
-            #    'apt-get update' updates package lists, 'apt-get install' installs software.
-            #    '-y' answers yes to prompts. 'docker.io' is the Ubuntu package for Docker.
-            sudo apt-get update && sudo apt-get install -y docker.io docker-compose
+            echo "--- Starting deployment on Lightsail ---"
 
-            # 2. Add the 'ubuntu' user to the 'docker' group
-            #    This allows the 'ubuntu' user to run docker commands without 'sudo'.
-            #    The change might require a new login session to take effect fully,
-            #    but often works within a script.
-            sudo usermod -aG docker ubuntu
+            # --- Install/Update Dependencies (Idempotent) ---
+            echo "Checking for and installing/updating apt packages..."
+            sudo apt-get update -y
+            sudo apt-get install -y docker.io docker-compose git
+            echo "Adding ubuntu user to docker group..."
+            sudo usermod -aG docker ubuntu || true # Add user to docker group, ignore error if already exists
 
-            # 3. Navigate to your project directory on the Lightsail server
-            cd ${REMOTE_DIR} || exit 1 # '|| exit 1' ensures script stops if directory not found
+            # Ensure docker daemon is running and user has permissions
+            echo "Restarting docker service and applying group permissions..."
+            sudo systemctl restart docker
+            newgrp docker # Apply new group permissions for current session (though not strictly necessary for script)
 
-            # 4. Pull the latest code from your GitHub repository
-            #    This ensures your server has the most up-to-date Dockerfiles, compose files, and app code.
-            git pull origin main
+            # --- Git Synchronization ---
+            echo "Performing Git synchronization..."
+            if [ -d "$PROJECT_DIR/.git" ]; then
+              echo "Repository already exists. Fetching and resetting..."
+              cd "$PROJECT_DIR"
+              git fetch origin main --verbose # Fetch latest changes verbosely
+              git reset --hard origin/main    # Forcefully reset to match remote main
+              git clean -df                   # Remove untracked files and directories
+              git pull origin main --verbose  # Pull latest (redundant after reset --hard, but good for logs)
+              echo "Current commit on server:"
+              git log -1 --pretty=format:"%h - %an, %ar : %s"
+            else
+              echo "Repository does not exist. Cloning..."
+              git clone "$REPO_URL" "$PROJECT_DIR"
+              cd "$PROJECT_DIR"
+              echo "Cloned repository. Current commit:"
+              git log -1 --pretty=format:"%h - %an, %ar : %s"
+            fi
+            echo "Git synchronization complete."
 
-            # 5. Stop and remove any currently running containers for your project
-            #    This ensures a clean restart.
-            docker compose down || true # '|| true' prevents script from failing if containers aren't running
+            # --- Create/Update .env file ---
+            echo "Creating/Updating .env file with secrets..."
+            # Ensure the .env file is created in the correct location
+            # and contains all necessary variables with correct names.
+            # We are using the .env file as the source for the app, as per your latest database.py
+            cat << EOT > "$PROJECT_DIR/.env"
+            # Postgres Database Keys
+            POSTGRES_DB=${{ env.POSTGRES_DB }}
+            POSTGRES_USER=${{ env.POSTGRES_USER }}
+            POSTGRES_PASSWORD=${{ env.POSTGRES_PASSWORD }}
+            POSTGRES_HOST=${{ env.POSTGRES_HOST }}
+            POSTGRES_PORT=${{ env.POSTGRES_PORT }}
 
-            # 6. Recreate/Update the .env file on the Lightsail server
-            #    This populates your application's environment variables from GitHub Secrets.
-            echo "POSTGRES_DB=$POSTGRES_DB" > .env
-            echo "POSTGRES_USER=$POSTGRES_USER" >> .env
-            echo "POSTGRES_PASSWORD=$POSTGRES_PASSWORD" >> .env
-            echo "POSTGRES_HOST=$POSTGRES_HOST" >> .env
-            echo "POSTGRES_PORT=$POSTGRES_PORT" >> .env
-            echo "STORAGE_BUCKET_URL=$STORAGE_BUCKET_URL" >> .env
-            echo "STORAGE_USERNAME=$STORAGE_USERNAME" >> .env
-            echo "STORAGE_PASSWORD=$STORAGE_PASSWORD" >> .env
+            # Lightsail Bucket Keys
+            STORAGE_BUCKET_URL=${{ env.STORAGE_BUCKET_URL }}
+            STORAGE_USERNAME=${{ env.STORAGE_USERNAME }}
+            STORAGE_PASSWORD=${{ env.STORAGE_PASSWORD }}
+            EOT
+            echo ".env file created/updated."
+            echo "Contents of .env (excluding sensitive values):"
+            grep -v "PASSWORD" "$PROJECT_DIR/.env" # Show .env content, but hide passwords
 
-            # 7. Build and start your Docker containers (FastAPI app and Nginx)
-            #    '--build' forces Docker to rebuild images (picks up latest code/Dockerfile changes).
-            #    '-d' runs containers in detached mode (in the background).
-            docker compose up --build -d
+            # --- Docker Compose Deployment ---
+            echo "Navigating to project directory for Docker Compose..."
+            cd "$PROJECT_DIR"
 
-            # 8. Clean up old, unused Docker images to save disk space
-            docker image prune -f
+            echo "Stopping and removing old Docker containers and volumes..."
+            # Use '|| true' to prevent script from failing if containers don't exist
+            docker compose down -v --remove-orphans || true
+
+            echo "Pruning old Docker images and containers..."
+            docker image prune -f || true
+            docker container prune -f || true
+
+            echo "Building and starting new Docker containers..."
+            # --build: Forces image rebuild using latest code
+            # -d: Runs in detached mode
+            # --force-recreate: Recreates containers even if config hasn't changed
+            docker compose up --build -d --force-recreate
+
+            echo "Checking Docker Compose service status:"
+            docker compose ps
+
+            echo "--- Deployment complete ---"
           EOF
