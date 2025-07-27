@@ -37,19 +37,35 @@ jobs:
           STORAGE_USERNAME: ${{ secrets.STORAGE_USERNAME }}
           STORAGE_PASSWORD: ${{ secrets.STORAGE_PASSWORD }}
         run: |
-          # Escape special characters in passwords for shell here-document.
-          # This is done on the GitHub Actions runner before SSH.
-          # It replaces '&', '/', '\', and '"' with their escaped versions.
-          ESCAPED_POSTGRES_PASSWORD=$(echo "${{ env.POSTGRES_PASSWORD }}" | sed 's/[&/\]/\\&/g; s/"/\\"/g')
-          ESCAPED_STORAGE_PASSWORD=$(echo "${{ env.STORAGE_PASSWORD }}" | sed 's/[&/\]/\\&/g; s/"/\\"/g')
+          # Construct the .env file content on the GitHub Actions runner.
+          # We use printf and ensure all variables are quoted to handle special characters.
+          # This content will be passed as a single string to the remote.
+          ENV_FILE_CONTENT=$(printf "POSTGRES_DB=%s\nPOSTGRES_USER=%s\nPOSTGRES_PASSWORD=%s\nPOSTGRES_HOST=%s\nPOSTGRES_PORT=%s\nSTORAGE_BUCKET_URL=%s\nSTORAGE_USERNAME=%s\nSTORAGE_PASSWORD=%s\n" \
+            "${{ env.POSTGRES_DB }}" \
+            "${{ env.POSTGRES_USER }}" \
+            "${{ env.POSTGRES_PASSWORD }}" \
+            "${{ env.POSTGRES_HOST }}" \
+            "${{ env.POSTGRES_PORT }}" \
+            "${{ env.STORAGE_BUCKET_URL }}" \
+            "${{ env.STORAGE_USERNAME }}" \
+            "${{ env.STORAGE_PASSWORD }}" \
+          )
 
-          # SSH into the Lightsail instance and execute commands
-          # Use -A for agent forwarding to allow Git operations via SSH.
-          # Changed the heredoc delimiter to 'EOF_SSH' to avoid conflicts.
-          ssh -A ubuntu@${{ env.LIGHTSAIL_IP }} << 'EOF_SSH'
-            # Define project directory and repository URL within the remote shell's scope
-            PROJECT_DIR_REMOTE="/home/ubuntu/EMR-SERVER"
-            REPO_URL_REMOTE="git@github.com:Virtual-Medical-Mission/EMR-SERVER.git" # Your repository URL
+          # Define PROJECT_DIR and REPO_URL here for clarity and to ensure they are interpreted
+          # by the local shell before being passed to the remote.
+          PROJECT_DIR_LOCAL="/home/ubuntu/EMR-SERVER"
+          REPO_URL_LOCAL="git@github.com:Virtual-Medical-Mission/EMR-SERVER.git" # Your repository URL
+
+          # SSH into the Lightsail instance and execute commands.
+          # IMPORTANT: Removed single quotes around EOF_SSH to allow local shell variable expansion.
+          # This means variables like $PROJECT_DIR_LOCAL, $REPO_URL_LOCAL, and $ENV_FILE_CONTENT
+          # will be expanded by the GitHub Actions runner's shell before being sent to Lightsail.
+          ssh -A ubuntu@${{ env.LIGHTSAIL_IP }} << EOF_SSH
+            # These variables are now expanded by the GitHub Actions runner's shell
+            # and passed as literal strings into the remote shell.
+            PROJECT_DIR="$PROJECT_DIR_LOCAL"
+            REPO_URL="$REPO_URL_LOCAL"
+            ENV_CONTENT_TO_WRITE="$ENV_FILE_CONTENT" # Pass the constructed .env content
 
             echo "--- Starting deployment on Lightsail ---"
 
@@ -71,10 +87,10 @@ jobs:
 
             # --- Git Synchronization ---
             echo "Performing Git synchronization..."
-            echo "Repository URL being used: ${REPO_URL_REMOTE}" # Debugging: show the URL
-            if [ -d "$PROJECT_DIR_REMOTE/.git" ]; then
+            echo "Repository URL being used: $REPO_URL" # Debugging: show the URL
+            if [ -d "$PROJECT_DIR/.git" ]; then
               echo "Repository already exists. Fetching and resetting..."
-              cd "$PROJECT_DIR_REMOTE"
+              cd "$PROJECT_DIR"
               git fetch origin main --verbose # Fetch latest changes verbosely
               git reset --hard origin/main    # Forcefully reset to match remote main
               git clean -df                   # Remove untracked files and directories
@@ -84,8 +100,8 @@ jobs:
             else
               echo "Repository does not exist. Cloning..."
               # Use SSH agent forwarding for cloning via SSH
-              git clone "$REPO_URL_REMOTE" "$PROJECT_DIR_REMOTE"
-              cd "$PROJECT_DIR_REMOTE"
+              git clone "$REPO_URL" "$PROJECT_DIR"
+              cd "$PROJECT_DIR"
               echo "Cloned repository. Current commit:"
               git log -1 --pretty=format:"%h - %an, %ar : %s"
             fi
@@ -93,25 +109,15 @@ jobs:
 
             # --- Create/Update .env file ---
             echo "Creating/Updating .env file with secrets..."
-            # Use an inner heredoc with a distinct delimiter 'EOT_ENV' for the .env file content.
-            # Escaped passwords are used here.
-            cat << 'EOT_ENV' > "$PROJECT_DIR_REMOTE/.env"
-POSTGRES_DB=${{ env.POSTGRES_DB }}
-POSTGRES_USER=${{ env.POSTGRES_USER }}
-POSTGRES_PASSWORD=${ESCAPED_POSTGRES_PASSWORD}
-POSTGRES_HOST=${{ env.POSTGRES_HOST }}
-POSTGRES_PORT=${{ env.POSTGRES_PORT }}
-STORAGE_BUCKET_URL=${{ env.STORAGE_BUCKET_URL }}
-STORAGE_USERNAME=${{ env.STORAGE_USERNAME }}
-STORAGE_PASSWORD=${ESCAPED_STORAGE_PASSWORD}
-EOT_ENV
+            # Now, simply echo the pre-constructed and expanded content into the file
+            echo "$ENV_CONTENT_TO_WRITE" > "$PROJECT_DIR/.env"
             echo ".env file created/updated."
             echo "Contents of .env (excluding sensitive values):"
-            grep -v "PASSWORD" "$PROJECT_DIR_REMOTE/.env" # Show .env content, but hide passwords
+            grep -v "PASSWORD" "$PROJECT_DIR/.env" # Show .env content, but hide passwords
 
             # --- Docker Compose Deployment ---
             echo "Navigating to project directory for Docker Compose..."
-            cd "$PROJECT_DIR_REMOTE"
+            cd "$PROJECT_DIR"
 
             echo "Stopping and removing old Docker containers and volumes..."
             # Use '|| true' to prevent script from failing if containers don't exist
@@ -131,4 +137,4 @@ EOT_ENV
             docker compose ps
 
             echo "--- Deployment complete ---"
-EOF_SSH # Closing delimiter for the SSH heredoc
+          EOF_SSH # Closing delimiter for the SSH heredoc
