@@ -7,145 +7,68 @@ on:
 
 jobs:
   deploy:
-    runs-on: ubuntu-latest # Use a GitHub-hosted runner
+    runs-on: ubuntu-latest
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4 # Checkout your code
+        uses: actions/checkout@v4
 
       - name: Set up SSH Agent
         uses: webfactory/ssh-agent@v0.9.0
         with:
-          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }} # Use your SSH private key secret
+          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY }}
 
       - name: Add Lightsail IP to known_hosts
         run: |
           mkdir -p ~/.ssh
           ssh-keyscan -H ${{ secrets.LIGHTSAIL_IP }} >> ~/.ssh/known_hosts
-          chmod 600 ~/.ssh/known_hosts
 
-      - name: Deploy to Lightsail via SSH
-        env:
-          # Pass all necessary secrets as environment variables to this step
-          LIGHTSAIL_IP: ${{ secrets.LIGHTSAIL_IP }}
-          POSTGRES_DB: ${{ secrets.POSTGRES_DB }}
-          POSTGRES_USER: ${{ secrets.POSTGRES_USER }}
-          POSTGRES_PASSWORD: ${{ secrets.POSTGRES_PASSWORD }}
-          POSTGRES_HOST: ${{ secrets.POSTGRES_HOST }}
-          POSTGRES_PORT: ${{ secrets.POSTGRES_PORT }}
-          STORAGE_BUCKET_URL: ${{ secrets.STORAGE_BUCKET_URL }}
-          STORAGE_USERNAME: ${{ secrets.STORAGE_USERNAME }}
-          STORAGE_PASSWORD: ${{ secrets.STORAGE_PASSWORD }}
+      - name: Deploy to Lightsail
         run: |
-          # Define constants
-          PROJECT_DIR="/home/ubuntu/EMR-SERVER"
-          REPO_URL="https://github.com/Virtual-Medical-Mission/EMR-SERVER.git"
+          echo "Connecting to Lightsail instance..."
           
-          # Create a temporary script to upload
-          cat > deploy_script.sh << 'SCRIPT_EOF'
-          #!/bin/bash
-          set -e  # Exit on any error
+          ssh -o StrictHostKeyChecking=no ubuntu@${{ secrets.LIGHTSAIL_IP }} << 'EOF'
+          echo "=== Starting deployment ==="
           
-          PROJECT_DIR="/home/ubuntu/EMR-SERVER"
-          REPO_URL="https://github.com/Virtual-Medical-Mission/EMR-SERVER.git"
+          # Navigate to project directory
+          cd /home/ubuntu/EMR-SERVER || { echo "EMR-SERVER directory not found!"; exit 1; }
           
-          echo "--- Starting deployment on Lightsail ---"
+          echo "Current directory: $(pwd)"
+          echo "Git status before pull:"
+          git status
           
-          # --- Install/Update Dependencies (Idempotent and Clean) ---
-          echo "Checking for and installing/updating apt packages..."
-          sudo apt-get update -y
+          # Pull latest changes
+          echo "Pulling latest changes from main branch..."
+          git pull origin main
           
-          # Remove old Docker installations to prevent conflicts
-          sudo apt-get remove -y docker docker-engine docker.io containerd runc 2>/dev/null || true
-          sudo apt-get autoremove -y --purge 2>/dev/null || true
+          echo "Git status after pull:"
+          git status
           
-          # Install Docker and dependencies
-          sudo apt-get install -y docker.io docker-compose-plugin git curl
+          echo "Latest commit:"
+          git log -1 --oneline
           
-          # Add ubuntu user to docker group
-          sudo usermod -aG docker ubuntu 2>/dev/null || true
-          
-          # Start and enable Docker service
-          sudo systemctl enable docker
-          sudo systemctl start docker
-          
-          # Wait for Docker to be ready
-          echo "Waiting for Docker to be ready..."
-          sleep 5
-          
-          # --- Git Synchronization ---
-          echo "Performing Git synchronization..."
-          if [ -d "$PROJECT_DIR/.git" ]; then
-            echo "Repository already exists. Updating..."
-            cd "$PROJECT_DIR"
-            git fetch origin main
-            git reset --hard origin/main
-            git clean -df
-            echo "Current commit on server:"
-            git log -1 --oneline
-          else
-            echo "Repository does not exist. Cloning..."
-            rm -rf "$PROJECT_DIR" 2>/dev/null || true
-            git clone "$REPO_URL" "$PROJECT_DIR"
-            cd "$PROJECT_DIR"
-            echo "Cloned repository. Current commit:"
-            git log -1 --oneline
-          fi
-          
-          echo "Git synchronization complete."
-          
-          # --- Docker Compose Deployment ---
-          echo "Navigating to project directory..."
-          cd "$PROJECT_DIR"
-          
-          echo "Stopping existing containers..."
-          docker compose down -v --remove-orphans 2>/dev/null || true
-          
-          echo "Cleaning up Docker resources..."
-          docker system prune -f 2>/dev/null || true
-          
-          echo "Building and starting containers..."
-          docker compose up --build -d --force-recreate
-          
-          echo "Checking service status:"
-          docker compose ps
-          
-          echo "--- Deployment complete ---"
-          SCRIPT_EOF
-          
-          # Make the script executable
-          chmod +x deploy_script.sh
-          
-          # Create .env content
-          ENV_CONTENT="POSTGRES_DB=$POSTGRES_DB
-          POSTGRES_USER=$POSTGRES_USER
-          POSTGRES_PASSWORD=$POSTGRES_PASSWORD
-          POSTGRES_HOST=$POSTGRES_HOST
-          POSTGRES_PORT=$POSTGRES_PORT
-          STORAGE_BUCKET_URL=$STORAGE_BUCKET_URL
-          STORAGE_USERNAME=$STORAGE_USERNAME
-          STORAGE_PASSWORD=$STORAGE_PASSWORD"
-          
-          # Upload and execute deployment
-          scp deploy_script.sh ubuntu@$LIGHTSAIL_IP:/tmp/
-          
-          ssh ubuntu@$LIGHTSAIL_IP << 'SSH_EOF'
-            # Create .env file
-            mkdir -p /home/ubuntu/EMR-SERVER
-            cat > /home/ubuntu/EMR-SERVER/.env << 'ENV_EOF'
-          SSH_EOF
-          
-          # Send the env content
-          ssh ubuntu@$LIGHTSAIL_IP "cat >> /home/ubuntu/EMR-SERVER/.env" << ENV_EOF
-          $ENV_CONTENT
+          # Create/update .env file with secrets
+          echo "Updating .env file..."
+          cat > .env << 'ENV_EOF'
+          POSTGRES_DB=${{ secrets.POSTGRES_DB }}
+          POSTGRES_USER=${{ secrets.POSTGRES_USER }}
+          POSTGRES_PASSWORD=${{ secrets.POSTGRES_PASSWORD }}
+          POSTGRES_HOST=${{ secrets.POSTGRES_HOST }}
+          POSTGRES_PORT=${{ secrets.POSTGRES_PORT }}
+          STORAGE_BUCKET_URL=${{ secrets.STORAGE_BUCKET_URL }}
+          STORAGE_USERNAME=${{ secrets.STORAGE_USERNAME }}
+          STORAGE_PASSWORD=${{ secrets.STORAGE_PASSWORD }}
           ENV_EOF
           
-          # Execute the deployment script
-          ssh ubuntu@$LIGHTSAIL_IP << 'SSH_EOF'
-            chmod +x /tmp/deploy_script.sh
-            /tmp/deploy_script.sh
-            rm /tmp/deploy_script.sh
-          SSH_EOF
+          echo ".env file updated"
           
-          # Clean up local script
-          rm deploy_script.sh
+          # Restart Docker containers with latest code
+          echo "Restarting Docker containers..."
+          docker compose down || true
+          docker compose up --build -d
+          
+          echo "Checking container status:"
+          docker compose ps
+          
+          echo "=== Deployment complete ==="
+          EOF
