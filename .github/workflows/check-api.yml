@@ -1,0 +1,27 @@
+name: Check API After Deploy
+
+on:
+  workflow_run:
+    workflows: ["Deploy EMR-SERVER to Lightsail"]
+    types:
+      - completed
+
+jobs:
+  check-api:
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Ping API endpoint
+        run: |
+          for i in {1..10}; do
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" https://your-api-domain.com/health)
+            if [ "$STATUS" -eq 200 ]; then
+              echo "API is live"
+              exit 0
+            fi
+            echo "Waiting for API... Attempt $i"
+            sleep 10
+          done
+          echo "API failed to respond with 200 OK -- It is broken or deployment is taking a while"
+          exit 1
