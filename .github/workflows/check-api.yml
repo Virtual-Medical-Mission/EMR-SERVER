@@ -15,7 +15,7 @@ jobs:
       - name: Ping API endpoint
         run: |
           for i in {1..10}; do
-            STATUS=$(curl -s -o /dev/null -w "%{http_code}" https://your-api-domain.com/health)
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://52.42.206.31/)
             if [ "$STATUS" -eq 200 ]; then
               echo "API is live"
               exit 0
