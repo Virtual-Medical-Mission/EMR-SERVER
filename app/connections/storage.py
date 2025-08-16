@@ -30,3 +30,21 @@ def check_bucket_access():
         return True
     except Exception:
         return False
+
+def map_bucket_contents(prefix: str = ""):
+    try:
+        paginator = s3_client.get_paginator("list_objects_v2")
+        page_iterator = paginator.paginate(Bucket=bucket_name, Prefix=prefix)
+
+        objects = []
+        for page in page_iterator:
+            for obj in page.get("Contents", []):
+                objects.append({
+                    "key": obj["Key"],
+                    "size": obj["Size"],
+                    "last_modified": obj["LastModified"].isoformat()
+                })
+
+        return {"bucket": bucket_name, "objects": objects}
+    except Exception as e:
+        return {"bucket": bucket_name, "status": "error", "message": str(e)}
