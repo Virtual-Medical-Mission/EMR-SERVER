@@ -1,10 +1,10 @@
-from fastapi import FastAPI, HTTPException
-from sqlalchemy import text
-from sqlalchemy.exc import OperationalError, NoSuchColumnError
-from typing import List, Dict, Any
+from fastapi import FastAPI
+from sqlalchemy import text, inspect
+from sqlalchemy.exc import OperationalError
 
-# Import database engine and DB_NAME for connection management and display
-from .database import engine, DB_NAME
+from .connections.database import engine, DB_NAME
+from .connections.storage import check_bucket_access, bucket_name
+
 
 app = FastAPI()
 
@@ -24,77 +24,80 @@ def test_db_connection():
             current_time = result.scalar()
             return {"status": "success", "db_time": str(current_time)}
     except OperationalError as e:
+        # Handles database connection failures (e.g., credentials, firewall)
         return {"status": "error", "message": f"DB connection failed: {e}"}
     except Exception as e:
+        # Catches other unexpected errors during DB test
         return {"status": "error", "message": f"An unexpected error occurred during DB test: {e}"}
 
-
-@app.get("/patients/{patient_id}")
-def get_patient_by_id(patient_id: int):
+@app.get("/map-db")
+def map_database_schema():
     """
-    Searches for and returns a patient's data by their ID.
+    Connects to the database and returns its tables and columns as JSON.
+    Useful for inspecting the current database schema.
     """
+    db_schema = {"database_name": DB_NAME, "tables": []}
     try:
-        with engine.connect() as connection:
-            # Construct a SQL query to select all patient data by ID
-            query = text("SELECT * FROM patients WHERE id = :patient_id")
-            result = connection.execute(query, {"patient_id": patient_id})
-            patient = result.fetchone()
+        inspector = inspect(engine)
+        table_names = inspector.get_table_names()
 
-            if patient is None:
-                raise HTTPException(status_code=404, detail=f"Patient with ID {patient_id} not found.")
+        if not table_names:
+            db_schema["message"] = f"No tables found in database '{DB_NAME}'."
+            return db_schema
 
-            # Convert the result to a dictionary for a clean JSON response
-            return dict(patient)
+        for table_name in table_names:
+            table_info = {"name": table_name, "columns": []}
+            columns = inspector.get_columns(table_name)
+
+            for column in columns:
+                col_info = {
+                    "name": column['name'],
+                    "type": str(column['type']), # Convert SQLAlchemy Type to string
+                    "nullable": column['nullable'],
+                    "primary_key": column['primary_key']
+                }
+                # Add foreign key information
+                fk_info = inspector.get_foreign_keys(table_name, column_name=column['name'])
+                if fk_info:
+                    # For simplicity, if multiple FKs on one column, take the first.
+                    first_fk = fk_info[0]
+                    col_info["foreign_key"] = {
+                        "referred_table": first_fk['referred_table'],
+                        "referred_column": first_fk['referred_columns'][0]
+                    }
+                table_info["columns"].append(col_info)
+
+            # Add primary key constraint info at table level
+            pks = inspector.get_pk_constraint(table_name)
+            if pks and pks['constrained_columns']:
+                table_info["primary_key_columns"] = pks['constrained_columns']
+
+            # Add all foreign key constraints at table level
+            fks = inspector.get_foreign_keys(table_name)
+            if fks:
+                table_info["foreign_keys"] = []
+                for fk in fks:
+                    table_info["foreign_keys"].append({
+                        "constrained_columns": fk['constrained_columns'],
+                        "referred_table": fk['referred_table'],
+                        "referred_columns": fk['referred_columns']
+                    })
+
+            db_schema["tables"].append(table_info)
+
+        return db_schema
 
     except OperationalError as e:
-        raise HTTPException(status_code=500, detail=f"DB connection failed: {e}")
+        # Catch DB connection errors
+        return {"status": "error", "message": f"DB connection failed during mapping: {e}"}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {e}")
+        # Catch other unexpected errors
+        return {"status": "error", "message": f"An unexpected error occurred during database mapping: {e}"}
 
-
-@app.get("/appointments/{patient_id}")
-def get_appointments_by_patient_id(patient_id: int):
-    """
-    Retrieves all appointments for a given patient ID.
-    """
-    try:
-        with engine.connect() as connection:
-            # Query for appointments where the patient_id column matches the input
-            query = text("SELECT * FROM appointments WHERE patient_id = :patient_id")
-            result = connection.execute(query, {"patient_id": patient_id})
-            
-            appointments = [dict(row) for row in result]
-            
-            if not appointments:
-                raise HTTPException(status_code=404, detail=f"No appointments found for patient ID {patient_id}.")
-            
-            return {"patient_id": patient_id, "appointments": appointments}
-            
-    except OperationalError as e:
-        raise HTTPException(status_code=500, detail=f"DB connection failed: {e}")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {e}")
-
-
-@app.get("/medicine/{medicine_id}")
-def get_medicine_by_id(medicine_id: int):
-    """
-    Fetches details for a specific medicine by its ID.
-    """
-    try:
-        with engine.connect() as connection:
-            # Query the medicine table by its primary key
-            query = text("SELECT * FROM medicine WHERE id = :medicine_id")
-            result = connection.execute(query, {"medicine_id": medicine_id})
-            medicine = result.fetchone()
-
-            if medicine is None:
-                raise HTTPException(status_code=404, detail=f"Medicine with ID {medicine_id} not found.")
-
-            return dict(medicine)
-
-    except OperationalError as e:
-        raise HTTPException(status_code=500, detail=f"DB connection failed: {e}")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {e}")
+@app.get("/check-storage")
+def check_storage():
+    status = check_bucket_access()
+    return {
+        "bucket": bucket_name,
+        "status": "accessible" if status else "unreachable"
+    }
