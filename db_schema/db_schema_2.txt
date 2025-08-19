@@ -1,0 +1,50 @@
+Table patients {
+  id uuid [pk]
+  name varchar
+  date_of_birth date
+  age int
+}
+
+Table appointments {
+  id uuid [pk]
+  patient_id uuid [ref: > patients.id]
+  appointment_time timestamptz
+  clinician_id uuid [ref: > clinicians.id]
+}
+
+Table diagnoses {
+  id uuid [pk]
+  appointment_id uuid [ref: > appointments.id]
+  patient_id uuid [ref: > patients.id]
+  clinician_id uuid [ref: > clinicians.id]
+  diagnosis_text text
+}
+
+Table prescriptions {
+  id uuid [pk]
+  diagnosis_id uuid [ref: > diagnoses.id]
+  medicine_id uuid [ref: > medicines.id]
+  clinician_id uuid [ref: > clinicians.id]
+  quantity int
+  prescribed_at timestamptz
+}
+
+Table medicines {
+  id uuid [pk]
+  name varchar
+  quantity int
+}
+
+Table conditions {
+  id uuid [pk]
+  patient_id uuid [ref: > patients.id]
+  condition_name varchar
+  diagnosed_on date
+  status enum // active, resolved, chronic 
+}
+
+Table clinicians {
+  id uuid [pk]
+  name varchar
+  role varchar
+}

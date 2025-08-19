@@ -1,0 +1,28 @@
+Table patients {
+  id uuid [pk] 
+  name varchar
+  date_of_birth date
+  age int
+}
+
+Table appointments {
+  id uuid [pk]
+  patient_id uuid [ref: > patients.id]
+  appointment_time timestamptz
+  diagnosis text
+}
+
+Table medicines {
+  id uuid [pk]
+  name varchar
+  quantity int
+}
+
+Table prescriptions {
+  id uuid [pk]
+  appointment_id uuid [ref: > appointments.id]
+  patient_id uuid [ref: > patients.id]
+  medicine_id uuid [ref: > medicines.id]
+  quantity int
+  prescribed_at timestamptz
+}
