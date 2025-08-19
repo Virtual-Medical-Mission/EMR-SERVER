@@ -5,8 +5,18 @@ from sqlalchemy.exc import OperationalError
 from .connections.database import test_db_connection, map_database_schema
 from .connections.storage import check_bucket_access, bucket_name, map_bucket_contents
 
+from .codein import router as in_memory_router
 
-app = FastAPI()
+
+app = FastAPI(
+    title="EMR API",
+    description="EMR API with database/storage testing and in-memory demo features.",
+    version="0.1.0",
+    docs_url="/docs",
+    redoc_url="/redoc"
+)
+
+app.include_router(in_memory_router)
 
 # --- API Endpoints ---
 
