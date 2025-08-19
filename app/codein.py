@@ -9,7 +9,7 @@ import uuid
 # All routes defined here will have a common prefix (if specified) and tags
 router = APIRouter(
     prefix="/d", # Optional: Adds a /demo prefix to all routes in this file
-    tags=["In-Memory Demo Data"], # Groups these routes in Swagger UI
+    tags=["Data"], # Groups these routes in Swagger UI
 )
 
 # --- 1. Define Pydantic Schemas ---
