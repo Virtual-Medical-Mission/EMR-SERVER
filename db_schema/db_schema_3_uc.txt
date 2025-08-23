@@ -1,0 +1,51 @@
+Table Patients {
+  id uuid [pk]
+  name varchar
+  approx_age int
+}
+
+Table Clinicians {
+  id uuid [pk]
+  name varchar
+  role varchar // Doctor, Assistant, etc.
+}
+
+Table Medicine {
+  id uuid [pk]
+  name varchar
+  quantity int
+}
+
+Table Prescriptions {
+  id uuid [pk]
+  diagnosis_id uuid
+  medicine_id uuid
+  clinician_id uuid
+  prescribed_at timestamptz
+}
+
+Table Diagnoses {
+  id uuid [pk]
+  appointment_id uuid
+  patient_id uuid
+  clinician_id uuid
+  note_id uuid
+  condition_id uuid
+  status varchar // Active, Resolved, Chronic
+}
+
+Table Notes {
+  id uuid [pk]
+  soap_s text // Subjective
+  soap_o text // Objective
+  soap_a text // Assessment
+  soap_p text // Plan
+  created_at timestamptz
+}
+
+Table Appointments {
+  id uuid [pk]
+  patient_id uuid
+  clinician_id uuid
+  appointment_time timestamptz
+}
