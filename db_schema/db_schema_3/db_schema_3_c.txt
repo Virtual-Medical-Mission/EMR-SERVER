@@ -15,7 +15,7 @@ Table Medicine {
   name varchar
   quantity int
 }
-
+ 
 Table Prescriptions {
   id uuid [pk]
   diagnosis_id uuid [ref: > Diagnoses.id]
