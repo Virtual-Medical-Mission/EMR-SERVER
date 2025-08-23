@@ -14,7 +14,7 @@ DB_NAME = os.getenv("POSTGRES_DB")
 if not all([DB_USER, DB_PASSWORD, DB_HOST, DB_PORT, DB_NAME]):
     raise ValueError("One or more database environment variables are not set. Check your .env file.")
 
-DATABASE_URL = f"postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
+DATABASE_URL = f"postgresql://{DB_USER}:{DB_PASSWORD}@{DB_HOST}:{DB_PORT}/emr_records"
 engine = create_engine(DATABASE_URL)
 
 def test_db_connection():
